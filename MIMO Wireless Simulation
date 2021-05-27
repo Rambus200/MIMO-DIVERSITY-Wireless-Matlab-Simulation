@@ -1,0 +1,111 @@
+%16QAM
+%works with 2020b matlab 
+clc
+clear
+SNRdB = 0:14; % SNR (in dB)
+Nf = 1000; % number of frames to process
+Na = 500; % number of message bits
+eta = 64; % number of samples per symbol
+T = 0.01; % symbol duration (seconds/symbol)
+fc = 200E3; % carrier frequency (Hz)
+Ts = T / eta; % sampling period (samples/second)
+ant=2;%number of attennas/recievers
+% Symbol Map (16-QAM)
+%1000 1001 1011 1010
+%1100 1101 1111 1110
+%0100 0101 0111 0110
+%0000 0001 0011 0010
+SM = [-3-3i -1-3i 3-3i 1-3i ...
+ -3-1i -1-1i 3-1i 1-1i ...
+ -3+3i -1+3i 3+3i 1+3i ...
+ -3+1i -1+1i 3+1i 1+1i];
+M = length(SM); % Number of symbols in the constellation
+Nm = log2(M); % Number of bits per symbol
+Es = SM*SM' / M; % Energy per symbol
+Eb = Es / Nm; % Energy per bit
+% Pulse Shape
+hT = 1/sqrt(T) * ones(1, eta); % rectangular (NRZ)
+% Matched Filter
+hR = fliplr(hT); % receive filter (samples)
+Nv = Na/Nm ; % number of symbols per frame
+Ns = Nv * eta; % number of samples per frame
+t = (0:Ns-1)*Ts; % time
+ 
+%H will change as time progresses
+H = 1/sqrt(2) * (randn(ant,ant) + j * randn(ant,ant));%Generate random channel gain matrix
+ 
+for ni = 1:length(SNRdB) % Loop over each SNR
+     nErrs = 0;
+     No = Eb * 10.^(-SNRdB(ni)/10);
+         for i=1:Nf % Loop over each message word
+         % Transmitter
+         a = randi([0 1], Nm, Nv); % Source
+         d = 2.^(Nm-1:-1:0) * a; % Group bits into integers
+         v = SM(d+1); % Symbol Mapper
+         vt = conv(upsample(v, eta), hT); % Pulse Shaping Filter
+         vt = vt(1:Ns); % Truncate
+         vct = real(vt .* sqrt(2) .* exp(j*2*pi*fc*t)); % Modulator
+         vcct=zeros(ant,length(vct));
+        
+         %zero arrays
+         bottom=zeros([1 length(vct)]);
+         top=zeros([1 length(vct)]);
+         
+         for k=1:ant
+            for n=1:ant
+                 % (Channel gain matrix multiplied with the signal vector plus AWGN) in cell array denoted by '{}'
+                 awgn=sqrt(1/Ts*No/2)*randn(1, length(vct));% AWGN
+                 hn = (sqrt(1/2) * [1 j] * randn(2, length(vcct))); %fading process
+                 Hm= hn*H(k,n);
+                 rct(k,n) = {(vct.*Hm) + awgn};
+                 %implementing MRC (maximal ratio combining)
+                 %takes a weighted sum of all channels and heavily weights the best SNR of tested channels
+                 top=top+(exp(-j .*angle(Hm)).*rct{k,n} .*abs(Hm)) ;
+                 bottom=bottom+(abs(Hm).^2);
+            end
+         end
+         % Receiver
+         rcct= top./bottom;
+         %Recieved signal is chosen by best gain channel and now is demodulated
+         rot = rcct .* sqrt(2) .* exp(-j*2*pi*fc*t); % Demodulator
+         rt = conv(rot, hR) * Ts; % Matched Filter
+         r = rt((1:Nv)*eta); % Downsample
+         test1=abs(r.' - SM);
+         [X,I] = min(test1, [], 2);
+         ah = de2bi(I-1, Nm, 'left-msb').';
+         nErrs = nErrs + sum(sum(bitxor(a, ah))); % Count Errors
+         end
+     disp(sprintf('SNR: %g dB', SNRdB(ni)));
+     disp(sprintf('Number of errors: %d', nErrs));
+     disp(sprintf('BER: %g', nErrs/(Na*Nf)));
+     totErrs(ni) = nErrs;
+end
+Pb_sim = totErrs / (Nf*Na);
+%PSD calc
+vt = vt(1:Ns); % Truncate to first Ns samples
+Vf = fftshift(fft(vt)); % Calculate FFT
+PSD = Vf.*conj(Vf) * Ts / Ns; % Calculate PSD
+ 
+figure(1)
+Pb_theory = 4/log2(M) * 0.5*erfc(sqrt(3*10.^(SNRdB/10)*log2(M)/(M-1)/2));
+%a better approximation
+Pb_theory = 4/log2(M) * (1-1/sqrt(M))* 0.5*erfc(sqrt(3*10.^(SNRdB/10)*log2(M)/(M-1)/2));
+semilogy(SNRdB, Pb_sim, 'b',SNRdB, Pb_theory, 'k');
+xlabel('E_b/N_0 (dB)');
+xlabel('BER');
+legend('Simulated', 'Theoretical');
+grid on
+ 
+%PSD graph
+figure(2)
+faxis = (-0.5:1/length(vcct):0.5-1/length(vcct))*1/T*eta;
+plot(faxis/1000,10*log10(PSD)) %experimental
+filttime = zeros(1,length(Vf));
+filttime(1:eta) = 1/sqrt(T);
+Vf= fftshift(fft(filttime));
+PSD1 = Vf .* conj(Vf)*T/length(filttime);
+hold on
+%plot(faxis/1000,10*log10(PSD1),'r'); % theoretical
+legend('Experimental')
+xlabel('Frequency (kHz)')
+ylabel('PSD')
